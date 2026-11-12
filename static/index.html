@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Notes</title>
+<style>
+  :root {
+    --bg: #e9eef3;
+    --surface: #f8fafc;
+    --ink: #14213d;
+    --muted: #5b6b82;
+    --line: #c5d0dd;
+    --accent: #f2a900;
+    --danger: #b3261e;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1726; --surface: #16233a; --ink: #e8eef7;
+      --muted: #9aaac1; --line: #2b3d5a; --danger: #ff8a80;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  }
+  main { max-width: 680px; margin: 0 auto; padding: 40px 20px 80px; }
+  h1 { font-size: 2rem; margin: 0 0 24px; letter-spacing: -0.02em; }
+  form {
+    background: var(--surface); border: 1px solid var(--line);
+    border-left: 6px solid var(--accent); border-radius: 4px;
+    padding: 16px; display: grid; gap: 10px; margin-bottom: 32px;
+  }
+  input, textarea {
+    width: 100%; font: inherit; color: inherit; background: transparent;
+    border: 0; border-bottom: 1px solid var(--line); padding: 8px 2px; resize: vertical;
+  }
+  input { font-weight: 600; }
+  input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .hint { color: var(--muted); font-size: .85rem; }
+  .hint.error { color: var(--danger); }
+  button {
+    font: inherit; font-weight: 600; cursor: pointer; border-radius: 4px;
+    border: 1px solid var(--ink); background: var(--ink); color: var(--bg); padding: 8px 18px;
+  }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.ghost { background: transparent; color: var(--muted); border-color: transparent; padding: 4px 8px; font-weight: 500; }
+  button.ghost:hover { color: var(--danger); }
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+  li { background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 14px 16px; }
+  li h2 { font-size: 1.05rem; margin: 0 0 4px; }
+  li p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  li .meta { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; color: var(--muted); font-size: .8rem; }
+  li.new { animation: pop .3s ease-out; }
+  @keyframes pop { from { transform: translateY(-6px); opacity: 0; } }
+  .empty { color: var(--muted); text-align: center; padding: 24px 0; }
+  @media (prefers-reduced-motion: reduce) { li.new { animation: none; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Notes</h1>
+
+  <form id="form">
+    <input id="title" placeholder="Title (optional)" maxlength="120" aria-label="Title">
+    <textarea id="body" rows="4" placeholder="Write a note…" aria-label="Note text" required></textarea>
+    <div class="row">
+      <span id="status" class="hint" role="status"></span>
+      <button id="save" type="submit">Save note</button>
+    </div>
+  </form>
+
+  <ul id="list" aria-live="polite"></ul>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const form = $("form"), list = $("list"), status = $("status"), save = $("save");
+
+function setStatus(msg, isError = false) {
+  status.textContent = msg;
+  status.classList.toggle("error", isError);
+}
+
+function formatDate(s) {
+  // SQLite stores UTC as "YYYY-MM-DD HH:MM:SS"
+  const d = new Date(s.replace(" ", "T") + "Z");
+  return d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+function render(notes, newId) {
+  list.replaceChildren();
+  if (!notes.length) {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = "No notes yet. Write one above and select Save note.";
+    list.append(p);
+    return;
+  }
+  for (const n of notes) {
+    const li = document.createElement("li");
+    if (n.id === newId) li.className = "new";
+    if (n.title) {
+      const h = document.createElement("h2");
+      h.textContent = n.title;   // textContent avoids XSS
+      li.append(h);
+    }
+    const p = document.createElement("p");
+    p.textContent = n.body;
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const time = document.createElement("span");
+    time.textContent = formatDate(n.created_at);
+    const del = document.createElement("button");
+    del.className = "ghost";
+    del.textContent = "Delete note";
+    del.addEventListener("click", () => removeNote(n.id));
+    meta.append(time, del);
+    li.append(p, meta);
+    list.append(li);
+  }
+}
+
+async function api(path, options) {
+  const res = await fetch(path, options);
+  if (res.status === 204) return null;
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Something went wrong. Try again.");
+  return data;
+}
+
+async function loadNotes(newId) {
+  try {
+    render(await api("/api/notes"), newId);
+  } catch (e) {
+    setStatus("Couldn't load notes. Check that the server is running.", true);
+  }
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  save.disabled = true;
+  setStatus("Saving…");
+  try {
+    const note = await api("/api/notes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: $("title").value, body: $("body").value }),
+    });
+    form.reset();
+    setStatus("Saved.");
+    await loadNotes(note.id);
+  } catch (err) {
+    setStatus(err.message, true);
+  } finally {
+    save.disabled = false;
+  }
+});
+
+async function removeNote(id) {
+  try {
+    await api(`/api/notes/${id}`, { method: "DELETE" });
+    setStatus("Deleted.");
+    await loadNotes();
+  } catch (err) {
+    setStatus(err.message, true);
+  }
+}
+
+loadNotes();
+</script>
+</body>
+</html>
